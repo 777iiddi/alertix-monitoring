@@ -1,0 +1,252 @@
+# ============================================================================
+# Alertix Monitoring - Docker Compose
+# ============================================================================
+# This file defines all services required to run the Alertix Monitoring platform
+# ============================================================================
+
+version: '3.8'
+
+services:
+  # ==========================================================================
+  # PostgreSQL + TimescaleDB
+  # ==========================================================================
+  postgres:
+    image: timescale/timescaledb:latest-pg15
+    container_name: alertix-postgres
+    environment:
+      POSTGRES_DB: alertix
+      POSTGRES_USER: alertix
+      POSTGRES_PASSWORD: alertix123
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - alertix-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U alertix"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # Apache Kafka
+  # ==========================================================================
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: alertix-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
+    networks:
+      - alertix-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: alertix-kafka
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 168  # 7 days
+      KAFKA_LOG_RETENTION_BYTES: 1073741824  # 1GB
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - alertix-network
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  # ==========================================================================
+  # Kafka UI (Optional - for development)
+  # ==========================================================================
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: alertix-kafka-ui
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_CLUSTERS_0_NAME: alertix
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    ports:
+      - "8090:8080"
+    networks:
+      - alertix-network
+
+  # ==========================================================================
+  # Backend (Spring Boot)
+  # ==========================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: alertix-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      DATABASE_URL: jdbc:postgresql://postgres:5432/alertix
+      DATABASE_USER: alertix
+      DATABASE_PASSWORD: alertix123
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      JWT_SECRET: alertix-super-secret-jwt-key-please-change-in-production-make-it-very-long
+      MAIL_USERNAME: ${MAIL_USERNAME:-your-email@gmail.com}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-your-app-password}
+    ports:
+      - "8080:8080"
+    volumes:
+      - backend-logs:/app/logs
+    networks:
+      - alertix-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ==========================================================================
+  # Frontend (Angular)
+  # ==========================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: alertix-frontend
+    depends_on:
+      - backend
+    environment:
+      API_URL: http://localhost:8080/api
+    ports:
+      - "4200:80"
+    networks:
+      - alertix-network
+
+  # ==========================================================================
+  # Redis (Optional - for caching)
+  # ==========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: alertix-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - alertix-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # Prometheus (Metrics Collection)
+  # ==========================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: alertix-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - alertix-network
+
+  # ==========================================================================
+  # Grafana (Monitoring Dashboards)
+  # ==========================================================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: alertix-grafana
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: grafana-clock-panel
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./deploy/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./deploy/grafana/datasources:/etc/grafana/provisioning/datasources
+    ports:
+      - "3000:3000"
+    networks:
+      - alertix-network
+
+  # ==========================================================================
+  # NGINX (Reverse Proxy - Optional)
+  # ==========================================================================
+  nginx:
+    image: nginx:alpine
+    container_name: alertix-nginx
+    depends_on:
+      - backend
+      - frontend
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./deploy/nginx/ssl:/etc/nginx/ssl
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - alertix-network
+
+# ============================================================================
+# Networks
+# ============================================================================
+networks:
+  alertix-network:
+    driver: bridge
+    name: alertix-network
+
+# ============================================================================
+# Volumes
+# ============================================================================
+volumes:
+  postgres-data:
+    name: alertix-postgres-data
+  zookeeper-data:
+    name: alertix-zookeeper-data
+  zookeeper-logs:
+    name: alertix-zookeeper-logs
+  kafka-data:
+    name: alertix-kafka-data
+  backend-logs:
+    name: alertix-backend-logs
+  redis-data:
+    name: alertix-redis-data
+  prometheus-data:
+    name: alertix-prometheus-data
+  grafana-data:
+    name: alertix-grafana-data
