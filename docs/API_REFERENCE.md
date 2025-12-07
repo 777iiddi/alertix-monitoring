@@ -236,8 +236,7 @@ Authorization: Bearer {access_token}
     "id": 1,
     "name": "web-server-01",
     "ipAddress": "192.168.1.10",
-    "status": "UP",
-    ...
+    "status": "UP"
   }
 ]
 ```
@@ -256,8 +255,7 @@ Authorization: Bearer {access_token}
     "id": 3,
     "name": "backup-server",
     "ipAddress": "192.168.1.30",
-    "status": "DOWN",
-    ...
+    "status": "DOWN"
   }
 ]
 ```
@@ -384,8 +382,7 @@ Authorization: Bearer {access_token}
   "id": 1,
   "status": "ACKNOWLEDGED",
   "acknowledgedAt": "2025-12-07T15:30:00Z",
-  "acknowledgedBy": "admin",
-  ...
+  "acknowledgedBy": "admin"
 }
 ```
 
