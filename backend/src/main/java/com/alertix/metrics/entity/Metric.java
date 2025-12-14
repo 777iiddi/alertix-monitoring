@@ -1,7 +1,7 @@
 package com.alertix.metrics.entity;
 
-import com.alertix.inventory.entity.Host;
-import com.alertix.inventory.entity.MonitoredService;
+import com.alertix.alerts.entity.Host;
+import com.alertix.alerts.entity.MonitoredService;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.JdbcTypeCode;
